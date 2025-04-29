@@ -5,7 +5,8 @@ import kotlinx.coroutines.withContext
 import mobi.sevenwinds.app.author.AuthorTable
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
-
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
 
 object BudgetService {
     suspend fun addRecord(body: BudgetRecord): BudgetRecord = withContext(Dispatchers.IO) {
@@ -24,24 +25,22 @@ object BudgetService {
 
     suspend fun getYearStats(param: BudgetYearParam): BudgetYearStatsResponse = withContext(Dispatchers.IO) {
         transaction {
-            val allRecordsQuery = BudgetTable.select { BudgetTable.year eq param.year }
-            val total = allRecordsQuery.count()
+            var filterConditions = BudgetTable.year eq param.year
+            if (param.authorFullNameFilter != null) {
+                filterConditions = filterConditions and (AuthorTable.fullName.upperCase() like "%${param.authorFullNameFilter.toUpperCase()}%")
+            }
 
-            val query = BudgetTable
+            val filteredQuery = BudgetTable
                 .join(AuthorTable, JoinType.LEFT, BudgetTable.authorId, AuthorTable.id)
-                .select {
-                    val conditions = BudgetTable.year eq param.year
+                .select { filterConditions }
 
-                    if (param.authorFullNameFilter != null) {
-                        conditions and (AuthorTable.fullName.upperCase() like "%${param.authorFullNameFilter.toUpperCase()}%")
-                    } else {
-                        conditions
-                    }
-                }
+            val total = filteredQuery.count()
+
+            val paginatedQuery = filteredQuery
                 .orderBy(BudgetTable.month to SortOrder.ASC, BudgetTable.amount to SortOrder.DESC)
                 .limit(param.limit, param.offset)
 
-            val data = query.map { row ->
+            val data = paginatedQuery.map { row ->
                 val budget = BudgetEntity.wrapRow(row)
                 BudgetRecord(
                     year = budget.year,
@@ -54,6 +53,7 @@ object BudgetService {
                 )
             }
 
+            val allRecordsQuery = BudgetTable.select { BudgetTable.year eq param.year }
             val sumByType = BudgetEntity.wrapRows(allRecordsQuery)
                 .groupBy { it.type }
                 .mapValues { entry -> entry.value.sumOf { it.amount } }
