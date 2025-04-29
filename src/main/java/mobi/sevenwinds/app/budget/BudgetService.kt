@@ -1,10 +1,11 @@
 package mobi.sevenwinds.app.budget
-
+import org.jetbrains.exposed.dao.EntityID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.jetbrains.exposed.sql.SortOrder
-import org.jetbrains.exposed.sql.select
+import mobi.sevenwinds.app.author.AuthorTable
+import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
+
 
 object BudgetService {
     suspend fun addRecord(body: BudgetRecord): BudgetRecord = withContext(Dispatchers.IO) {
@@ -14,6 +15,7 @@ object BudgetService {
                 this.month = body.month
                 this.amount = body.amount
                 this.type = body.type
+                this.authorId = body.authorId?.let { EntityID(it, AuthorTable) }
             }
 
             return@transaction entity.toResponse()
@@ -26,11 +28,31 @@ object BudgetService {
             val total = allRecordsQuery.count()
 
             val query = BudgetTable
-                .select { BudgetTable.year eq param.year }
+                .join(AuthorTable, JoinType.LEFT, BudgetTable.authorId, AuthorTable.id)
+                .select {
+                    val conditions = BudgetTable.year eq param.year
+
+                    if (param.authorFullNameFilter != null) {
+                        conditions and (AuthorTable.fullName.upperCase() like "%${param.authorFullNameFilter.toUpperCase()}%")
+                    } else {
+                        conditions
+                    }
+                }
                 .orderBy(BudgetTable.month to SortOrder.ASC, BudgetTable.amount to SortOrder.DESC)
                 .limit(param.limit, param.offset)
 
-            val data = BudgetEntity.wrapRows(query).map { it.toResponse() }
+            val data = query.map { row ->
+                val budget = BudgetEntity.wrapRow(row)
+                BudgetRecord(
+                    year = budget.year,
+                    month = budget.month,
+                    amount = budget.amount,
+                    type = budget.type,
+                    authorId = budget.authorId?.value,
+                    authorFullName = row.getOrNull(AuthorTable.fullName),
+                    authorCreatedAt = row.getOrNull(AuthorTable.createdAt)
+                )
+            }
 
             val sumByType = BudgetEntity.wrapRows(allRecordsQuery)
                 .groupBy { it.type }
