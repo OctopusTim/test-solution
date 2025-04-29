@@ -1,6 +1,8 @@
 package mobi.sevenwinds.app.budget
 
 import io.restassured.RestAssured
+import mobi.sevenwinds.app.author.AuthorRecord
+import mobi.sevenwinds.app.author.AuthorTable
 import mobi.sevenwinds.common.ServerTest
 import mobi.sevenwinds.common.jsonBody
 import mobi.sevenwinds.common.toResponse
@@ -14,7 +16,10 @@ class BudgetApiKtTest : ServerTest() {
 
     @BeforeEach
     internal fun setUp() {
-        transaction { BudgetTable.deleteAll() }
+        transaction { BudgetTable.deleteAll()
+            AuthorTable.deleteAll()
+        }
+
     }
 
     @Test
@@ -73,6 +78,53 @@ class BudgetApiKtTest : ServerTest() {
             .jsonBody(BudgetRecord(2020, 15, 5, BudgetType.Приход))
             .post("/budget/add")
             .then().statusCode(400)
+    }
+
+    @Test
+    fun testAuthorAndBudgetIntegration() {
+        val authorId = RestAssured.given()
+            .jsonBody(mapOf("name" to "Иванов Иван Иванович"))
+            .post("/author/add")
+            .then().statusCode(200)
+            .extract().body().path<Int>("id")
+
+        RestAssured.given()
+            .jsonBody(BudgetRecord(2020, 5, 100, BudgetType.Приход, authorId = authorId))
+            .post("/budget/add")
+            .then().statusCode(200)
+
+        val statsResponse = RestAssured.given()
+            .get("/budget/year/2020/stats?limit=10&offset=0")
+            .then().statusCode(200)
+
+        Assert.assertEquals(1, statsResponse.extract().body().path<Int>("total"))
+        Assert.assertNotNull(statsResponse.extract().body().path<String>("items[0].authorFullName"))
+    }
+
+    @Test
+    fun testAuthorNameFilter() {
+        val author1Id = RestAssured.given()
+            .jsonBody(mapOf("name" to "Уникальный Автор"))
+            .post("/author/add")
+            .then().statusCode(200)
+            .extract().body().path<Int>("id")
+
+        val author2Id = RestAssured.given()
+            .jsonBody(mapOf("name" to "Совершенно Другой"))
+            .post("/author/add")
+            .then().statusCode(200)
+            .extract().body().path<Int>("id")
+
+        RestAssured.given().jsonBody(BudgetRecord(2020, 1, 100, BudgetType.Приход, authorId = author1Id)).post("/budget/add").then().statusCode(200)
+        RestAssured.given().jsonBody(BudgetRecord(2020, 2, 200, BudgetType.Приход, authorId = author2Id)).post("/budget/add").then().statusCode(200)
+
+        val response1 = RestAssured.given()
+            .queryParam("authorFullNameFilter", "Уникальный")
+            .get("/budget/year/2020/stats?limit=10&offset=0")
+            .then().statusCode(200)
+
+        Assert.assertEquals(1, response1.extract().body().path<Int>("total"))
+        Assert.assertEquals("Уникальный Автор", response1.extract().body().path<String>("items[0].authorFullName"))
     }
 
     private fun addRecord(record: BudgetRecord) {
